@@ -2337,6 +2337,50 @@ export const emitter = {
 
 // === Emit dispatch ===
 
+// Optional-chain continuation: `a?.b.c` → if a nullish then undef else a.b.c.
+// At the outermost `.`/`[]`/`()` whose leftmost descent contains an optional
+// access (?., ?.[], ?.()), hoist the deepest optional's head into a temp,
+// nullish-guard, and evaluate the rest of the chain with that optional
+// replaced by a regular access. The single guard short-circuits the whole
+// chain, matching ECMAScript optional-chain continuation semantics.
+function liftOptionalChain(node) {
+  const path = []
+  let cur = node
+  while (Array.isArray(cur) && (cur[0] === '.' || cur[0] === '[]' || cur[0] === '()' ||
+                                 cur[0] === '?.' || cur[0] === '?.[]' || cur[0] === '?.()')) {
+    path.push(cur)
+    cur = cur[1]
+  }
+  // Deepest optional in the chain; only lift when there's continuation outside it.
+  // optIdx === 0 (chain root is optional) is handled by the existing ?./?.[]/?.() handlers.
+  let optIdx = -1
+  for (let i = path.length - 1; i >= 1; i--) {
+    if (path[i][0] === '?.' || path[i][0] === '?.[]' || path[i][0] === '?.()') {
+      optIdx = i
+      break
+    }
+  }
+  if (optIdx <= 0) return null
+  const opt = path[optIdx]
+  const headExpr = opt[1]
+  const t = `${T}oc${ctx.func.uniq++}`
+  ctx.func.locals.set(t, 'f64')
+  let rebuilt
+  if (opt[0] === '?.') rebuilt = ['.', t, opt[2]]
+  else if (opt[0] === '?.[]') rebuilt = ['[]', t, opt[2]]
+  else rebuilt = ['()', t, ...opt.slice(2)] // '?.()'
+  for (let i = optIdx - 1; i >= 0; i--) {
+    const outer = path[i]
+    rebuilt = [outer[0], rebuilt, ...outer.slice(2)]
+  }
+  return typed(['block', ['result', 'f64'],
+    ['local.set', `$${t}`, asF64(emit(headExpr))],
+    ['if', ['result', 'f64'],
+      ['i32.eqz', isNullish(typed(['local.get', `$${t}`], 'f64'))],
+      ['then', asF64(emit(rebuilt))],
+      ['else', undefExpr()]]], 'f64')
+}
+
 /**
  * Emit single AST node to typed WASM IR.
  * Every returned node has .type = 'i32' | 'f64'.
@@ -2436,6 +2480,14 @@ export function emit(node, expect) {
   if (op == null && args.length === 1) {
     const v = args[0]
     return v === undefined ? undefExpr() : v === null ? nullExpr() : emit(v)
+  }
+
+  // Optional chain continuation: `a?.b.c()` short-circuits the whole chain when
+  // `a` is nullish. Lift here so the existing `.`, `[]`, `()` handlers see a
+  // chain with the optional access already replaced and the guard wrapped around.
+  if (op === '.' || op === '[]' || op === '()') {
+    const lifted = liftOptionalChain(node)
+    if (lifted) return lifted
   }
 
   const handler = ctx.core.emit[op]

@@ -9,7 +9,7 @@
  * @module core
  */
 
-import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, temp, usesDynProps, ptrOffsetIR, isNullish } from '../src/ir.js'
+import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, temp, tempI32, usesDynProps, ptrOffsetIR, isNullish } from '../src/ir.js'
 import { emit } from '../src/emit.js'
 import { valTypeOf, lookupValType, VAL, T, repOf, updateRep } from '../src/analyze.js'
 import { err, inc, PTR, LAYOUT } from '../src/ctx.js'
@@ -18,6 +18,21 @@ import { strHashLiteral } from './collection.js'
 
 // Pre-shifted NaN prefix as a full i64 mask, for `(i64.const ${NAN_BITS})` use.
 const NAN_BITS = '0x' + LAYOUT.NAN_PREFIX_BITS.toString(16).toUpperCase().padStart(16, '0')
+
+// String.prototype methods that string.js registers under the unqualified
+// `.${method}` key (no `.string:${method}` companion, because the name doesn't
+// collide with an array method). Used by `?.()` collapse to recognize that a
+// generic-keyed emitter is string-only — needed because there's no compile-time
+// ownership metadata for unqualified emitter keys, but the JS spec disambiguates
+// these by name. Keep in sync with string.js (and regex.js for match/search/
+// replace/split, which register `.string:${method}` so don't appear here).
+const STRING_ONLY_GENERIC = new Set([
+  'toUpperCase', 'toLowerCase', 'startsWith', 'endsWith',
+  'padStart', 'padEnd', 'repeat', 'trim', 'trimStart', 'trimEnd',
+  'charAt', 'charCodeAt', 'codePointAt', 'normalize', 'localeCompare',
+  'replace', 'replaceAll', 'match', 'matchAll',
+  'encode', 'decode',
+])
 
 const PTR_BY_VAL = {
   [VAL.ARRAY]: PTR.ARRAY,
@@ -634,11 +649,62 @@ export default (ctx) => {
     return emitNullishGuarded(['local.tee', `$${t}`, va], asF64(ctx.core.emit['[]'](t, idx)))
   }
 
-  // Optional call: fn?.(...args) → null if fn is null, else call fn
+  // Optional call: fn?.(...args) → null if fn is null, else call fn.
+  // Method-call shape `obj?.method?.(args)`: callee is `['?.', obj, method]`.
+  // Spec: short-circuit on either obj-nullish OR obj.method-undefined. Built-in
+  // methods on jz receivers aren't first-class function values, so the inner `?.`
+  // can't reach them via property lookup — collapse to method dispatch instead.
+  //
+  // For statically-typed receivers, collapse to `()` directly. For unknown-type
+  // receivers calling a String.prototype method, wrap with a runtime STRING-ptr
+  // guard: dispatch only when the runtime ptr is STRING/SSO, else short-circuit
+  // to undef. This handles e.g. `unit?.toUpperCase?.()` where `unit` is an
+  // untyped function parameter (works at runtime when string, harmless when not),
+  // and `op?.startsWith?.(...)` in polymorphic-receiver code (returns undef for
+  // non-string `op` instead of trapping in `__str_startswith`).
   ctx.core.emit['?.()'] = (callee, ...args) => {
+    if (Array.isArray(callee) && callee[0] === '?.') {
+      const [, obj, method] = callee
+      const callArgs = args.length === 0 ? null
+        : args.length === 1 ? args[0]
+        : [',', ...args]
+
+      const vt = typeof obj === 'string' ? (repOf(obj)?.val || lookupValType(obj)) : valTypeOf(obj)
+      if (vt && (
+        ctx.core.emit[`.${vt}:${method}`] ||
+        (vt === VAL.STRING && ctx.core.emit[`.${method}`])
+      )) {
+        return ctx.core.emit['()'](callee, callArgs)
+      }
+
+      // Unknown receiver, simple identifier: for known String.prototype method
+      // names, dispatch with a runtime STRING-ptr guard. (`.${method}` is registered
+      // by string.js as a string-only generic for non-array-colliding names; we
+      // recognize the method name as a JS-spec string method and only dispatch when
+      // the runtime type matches.) Skip complex obj expressions — re-emitting them
+      // for the typed receiver inside the guard can use a type-specific accessor
+      // that traps on polymorphic runtime types (e.g. `node[0]` analyzed as ARRAY
+      // emits `__arr_idx_known`, which traps when `node` is a string at runtime).
+      const strEmit = ctx.core.emit[`.string:${method}`] ||
+        (STRING_ONLY_GENERIC.has(method) ? ctx.core.emit[`.${method}`] : null)
+      if (!vt && typeof obj === 'string' && strEmit) {
+        inc('__ptr_type')
+        const t = temp('oc')
+        const tt = tempI32('oct')
+        return typed(['block', ['result', 'f64'],
+          ['local.set', `$${t}`, asF64(emit(obj))],
+          ['if', ['result', 'f64'], notNullish(['local.get', `$${t}`]),
+            ['then', ['block', ['result', 'f64'],
+              ['local.set', `$${tt}`, ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
+              ['if', ['result', 'f64'],
+                ['i32.eq', ['local.get', `$${tt}`], ['i32.const', PTR.STRING]],
+                ['then', asF64(strEmit(t, ...args))],
+                ['else', ['f64.const', `nan:${UNDEF_NAN}`]]]]],
+            ['else', ['f64.const', `nan:${NULL_NAN}`]]]], 'f64')
+      }
+    }
     const t = temp()
     const va = asF64(emit(callee))
-    // If nullish → return NULL_NAN, else call via fn.call
     if (!ctx.closure.call) err('Optional call requires fn module')
     const callResult = ctx.closure.call(typed(['local.get', `$${t}`], 'f64'), args)
     return emitNullishGuarded(['local.tee', `$${t}`, va], asF64(callResult))

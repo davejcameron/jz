@@ -22,6 +22,7 @@ export const PROP_MODULES = Object.assign(Object.create(null), {
   matchAll: ['core', 'string'], match: ['core', 'string'],
   substring: ['core', 'string'], substr: ['core', 'string'],
   add: ['core', 'collection'], clear: ['core', 'collection'],
+  hasOwnProperty: ['core', 'collection', 'string'],
   slice: ['core', 'string', 'array'], concat: ['core', 'string', 'array'],
   indexOf: ['core', 'string', 'array'], lastIndexOf: ['core', 'string', 'array'],
   includes: ['core', 'string', 'array'],

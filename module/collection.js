@@ -596,11 +596,12 @@ export default (ctx) => {
   // template at module-init froze hasSchemas to false and dropped the arm
   // for any schema registered later in the compile (the common case for
   // anonymous-literal arguments crossing call boundaries).
-  // Schema-arm key compare uses i64.eq instead of __str_eq: schema keys and
-  // the call-site key both come from the interned string pool (same NaN-box
-  // bits for identical literals), so bit-equality is correct and skips a
-  // per-iter function call. Real-world strings sharing prefix bytes are not
-  // a concern here — keys are static literals from the source program.
+  // Schema-arm key compare: i64.eq fast path covers interned-literal call-site
+  // keys (same NaN-box bits as the schema's literal — the metacircular hot
+  // path), with __str_eq fallback for runtime-allocated keys (concat, case
+  // conversion, JSON-parse) whose bits differ even when content matches.
+  // Without the fallback, `dyn_key in obj` returns 0 for static-segment
+  // OBJECTs whenever the key is computed at runtime.
   const buildObjectSchemaArm = () => ctx.schema.list.length > 0 ? `
     (if (i32.eq (local.get $type) (i32.const ${PTR.OBJECT}))
       (then
@@ -615,9 +616,14 @@ export default (ctx) => {
             (local.set $idx (i32.const 0))
             (block $kdone (loop $kloop
               (br_if $kdone (i32.ge_s (local.get $idx) (local.get $nkeys)))
-              (if (i64.eq
-                    (i64.load (i32.add (local.get $koff) (i32.shl (local.get $idx) (i32.const 3))))
-                    (local.get $key))
+              (if (if (result i32)
+                    (i64.eq
+                      (i64.load (i32.add (local.get $koff) (i32.shl (local.get $idx) (i32.const 3))))
+                      (local.get $key))
+                    (then (i32.const 1))
+                    (else (call $__str_eq
+                      (i64.load (i32.add (local.get $koff) (i32.shl (local.get $idx) (i32.const 3))))
+                      (local.get $key))))
                 (then (return (i64.load (i32.add (local.get $off) (i32.shl (local.get $idx) (i32.const 3)))))))
               (local.set $idx (i32.add (local.get $idx) (i32.const 1)))
               (br $kloop)))))))` : ''
@@ -978,6 +984,15 @@ export default (ctx) => {
           ['i64.reinterpret_f64', objVal], ['i64.reinterpret_f64', keyVal]]]]]] : []),
 
       ['local.get', `$${outTmp}`]], 'i32')
+  }
+
+  // .hasOwnProperty(key) — same key-existence semantics as `key in obj` for jz
+  // objects (no prototype chain to distinguish from). Reusing `in` keeps OBJECT
+  // schema, HASH probe, ARRAY/STRING index, and EXTERNAL host paths consistent.
+  // Returned i32 is widened to f64 to match generic method-dispatch contract.
+  ctx.core.emit['.hasOwnProperty'] = (obj, key) => {
+    const inResult = ctx.core.emit['in'](key, obj)
+    return typed(['f64.convert_i32_s', asI32(inResult)], 'f64')
   }
 
   // === for...in on dynamic objects (HASH iteration) ===
