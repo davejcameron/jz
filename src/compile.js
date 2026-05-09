@@ -273,6 +273,7 @@ function analyzeFuncForEmit(func, programFacts) {
       if (r.arrayElemSchema != null) updateRep(pname, { arrayElemSchema: r.arrayElemSchema })
       if (r.arrayElemValType != null) updateRep(pname, { arrayElemValType: r.arrayElemValType })
       if (r.intConst != null) updateRep(pname, { intConst: r.intConst })
+      if (r.lazy != null) updateRep(pname, { lazy: r.lazy })
     }
   }
   // Drop any earlier-cached analyzeLocals for this body — narrowSignatures called
@@ -378,6 +379,7 @@ function emitFunc(func, funcFacts, programFacts) {
         ctx.schema.vars.set(pname, r.schemaId)
         updateRep(pname, { schemaId: r.schemaId })
       }
+      if (r.lazy != null) updateRep(pname, { lazy: r.lazy })
     }
   }
 
@@ -1235,6 +1237,9 @@ function stripStaticDataPrefix(sec) {
           Array.isArray(child[3]) && child[3][0] === 'i32.const' &&
           typeof child[3][1] === 'number' && (child[3][1] & LAYOUT.SSO_BIT)
         if (!isSsoString) child[4][1] -= prefix
+      } else if (child[0] === 'i32.const' && child.staticDataOffset &&
+        typeof child[1] === 'number' && child[1] >= prefix) {
+        child[1] -= prefix
       } else if (child[0] === 'f64.const' &&
         typeof child[1] === 'string' && child[1].startsWith('nan:0x')) {
         const bits = BigInt(child[1].slice(4)) | 0x7FF0000000000000n

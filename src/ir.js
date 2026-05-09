@@ -479,6 +479,7 @@ export function readVar(name) {
     const aux = rep.ptrAux ?? ctx.schema.idOf?.(name)
     if (aux != null) node.ptrAux = aux
   }
+  if (rep?.lazy) node.lazy = rep.lazy
   return node
 }
 

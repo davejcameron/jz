@@ -116,6 +116,9 @@ export const VAL = {
  *   jsonShape:        obj   — { vt, props?, elem? } for HASH/ARRAY trees parsed
  *                             from a compile-time JSON.parse source. Propagates
  *                             through `.prop` and `[i]` so nested chains stay typed.
+ *   lazy:             obj   — module-owned lazy value fact, e.g.
+ *                             { hook, shape }. Core lowering stays generic; the
+ *                             owning hook interprets shape.
  *   typedCtor:        str   — TypedArray ctor name (`Float64Array`, …)
  *   intCertain:       bool  — proven integer-valued (every defining RHS is integer-shaped).
  *                             Pure analysis fact; codegen extensions may use it to choose
@@ -252,6 +255,10 @@ export function valTypeOf(expr) {
   // Index access:  `arr[i]` → ['[]', arr, i].
   if (op === '[]') {
     if (args.length < 2) return VAL.ARRAY
+    {
+      const vt = lazyValType(lazyOf(expr))
+      if (vt) return vt
+    }
     // Indexed read on a known typed-array receiver yields a number (BigInt64/BigUint64Array
     // would yield BigInt, but they're rare and we don't track per-elem type here — the
     // .typed:[] emit path already handles their f64-cast correctly; this only affects
@@ -280,6 +287,10 @@ export function valTypeOf(expr) {
   // sourced from `JSON.parse(stringConst)`, walk the shape tree to recover the
   // child's val-type. Generic for any compile-time-known JSON literal.
   if (op === '.' && typeof args[1] === 'string') {
+    {
+      const vt = lazyValType(lazyOf(expr))
+      if (vt) return vt
+    }
     const sh = shapeOf(args[0])
     if (sh?.vt === VAL.OBJECT || sh?.vt === VAL.HASH) {
       const child = sh.props[args[1]]
@@ -465,6 +476,39 @@ export function shapeOf(expr) {
     if (parent?.vt === VAL.ARRAY) return parent.elem || null
   }
   return null
+}
+
+export function lazyOf(expr) {
+  if (typeof expr === 'string') return ctx.func.repByLocal?.get(expr)?.lazy || ctx.scope.repByGlobal?.get(expr)?.lazy || null
+  if (!Array.isArray(expr)) return null
+  const [op, ...args] = expr
+  for (const hook of ctx.core.lazyAccess || []) {
+    const direct = hook.lazyOf?.(expr)
+    if (direct) return direct
+  }
+  if ((op === '.' || op === '?.') && typeof args[1] === 'string') {
+    const base = lazyOf(args[0])
+    if (!base) return null
+    const hook = base.hook
+    return hook?.child?.(base, args[1]) || null
+  }
+  if (op === '[]' || op === '?.[]') {
+    const base = lazyOf(args[0])
+    if (!base) return null
+    const hook = base.hook
+    return hook?.index?.(base, args[1]) || null
+  }
+  if (op === '??') return lazyOf(args[0])
+  if (op === '()' && typeof args[0] === 'string') {
+    const f = ctx.func.map?.get(args[0])
+    if (f?.lazyResult) return f.lazyResult
+  }
+  return null
+}
+
+export function lazyValType(lazy) {
+  if (!lazy) return null
+  return lazy.hook?.valType?.(lazy) || null
 }
 
 
@@ -1402,6 +1446,12 @@ export function analyzeValTypes(body) {
             updateRep(a[1], { schemaId: sid })
             ctx.schema.vars.set(a[1], sid)
           }
+        }
+        const lazy = lazyOf(a[2])
+        if (lazy) {
+          updateRep(a[1], { lazy })
+          const lazyVt = lazyValType(lazy)
+          if (lazyVt) setVal(a[1], lazyVt)
         }
         // Propagate schemaId from a narrowed call result so subsequent valTypeOf
         // calls in this function body see the precise schema. emitDecl rebinds

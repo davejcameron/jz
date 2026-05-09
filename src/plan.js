@@ -24,7 +24,7 @@
  */
 
 import { ctx } from './ctx.js'
-import { T, VAL, analyzeBody, invalidateLocalsCache, staticObjectProps, staticPropertyKey, valTypeOf, typedElemCtor, typedElemAux, updateGlobalRep, collectProgramFacts } from './analyze.js'
+import { T, VAL, analyzeBody, invalidateLocalsCache, staticObjectProps, staticPropertyKey, valTypeOf, typedElemCtor, typedElemAux, updateGlobalRep, collectProgramFacts, returnExprs, lazyOf, lazyValType } from './analyze.js'
 import { MAX_CLOSURE_ARITY } from './ir.js'
 import narrowSignatures, { specializeBimorphicTyped, refineDynKeys } from './narrow.js'
 
@@ -782,6 +782,26 @@ const resolveClosureWidth = (programFacts) => {
     : Math.min(MAX_CLOSURE_ARITY, Math.max(maxCall, maxDef + (hasRest ? 1 : 0), floor))
 }
 
+const sameLazy = (a, b) => JSON.stringify(a) === JSON.stringify(b)
+
+const inferLazyResults = () => {
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const func of ctx.func.list) {
+      if (func.raw || func.lazyResult || func.sig.results.length !== 1) continue
+      const exprs = returnExprs(func.body)
+      if (!exprs.length) continue
+      const first = lazyOf(exprs[0])
+      if (!first || !exprs.every(e => sameLazy(lazyOf(e), first))) continue
+      func.lazyResult = first
+      const vt = lazyValType(first)
+      if (vt && !func.valResult) func.valResult = vt
+      changed = true
+    }
+  }
+}
+
 const canSkipWholeProgramNarrowing = (programFacts) =>
   programFacts.callSites.length === 0 &&
   programFacts.valueUsed.size === 0 &&
@@ -804,6 +824,7 @@ export default function plan(ast) {
 
   materializeAutoBoxSchemas(programFacts)
   resolveClosureWidth(programFacts)
+  inferLazyResults()
   if (canSkipWholeProgramNarrowing(programFacts)) return programFacts
 
   narrowSignatures(programFacts, ast)

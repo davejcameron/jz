@@ -115,6 +115,7 @@ export function reset(proto, globals) {
     stdlib: {},
     stdlibDeps: {},   // populated per-module at init time (was STDLIB_DEPS in this file)
     includes: new Set(),
+    lazyAccess: [],    // optional module-owned hooks for branded lazy values
     extImports: new Set(),  // __ext_* helpers actually emitted as env imports —
                             // pullStdlib() removes them from `includes` after wiring,
                             // so post-compile auditors (host: 'wasi') read this instead.

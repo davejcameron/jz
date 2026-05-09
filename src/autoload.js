@@ -97,7 +97,7 @@ export const TYPED_CTORS = ['Float64Array','Float32Array','Int32Array','Uint32Ar
 export const COLLECTION_CTORS = ['Set', 'Map']
 export const TIMER_NAMES = new Set(['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'])
 
-export const MOD_ALIAS = { Number: 'number', Array: 'array', Object: 'object', Symbol: 'symbol', JSON: 'json', BigInt: 'number', Error: 'core', TextEncoder: 'string', TextDecoder: 'string' }
+export const MOD_ALIAS = { Number: 'number', Array: 'array', Object: 'object', Symbol: 'symbol', JSON: 'json', BigInt: 'number', Error: 'core', TextEncoder: 'string', TextDecoder: 'string', 'shopify-function': 'shopify_function', 'shopify-function-wasm-api': 'shopify_function' }
 
 const MOD_DEPS = {
   number: ['core', 'string'],
@@ -109,6 +109,7 @@ const MOD_DEPS = {
   json: ['core', 'string', 'number', 'collection'],
   console: ['core', 'string', 'number'],
   regex: ['core', 'string', 'array'],
+  shopify_function: ['core'],
 }
 
 export const hasModule = name => Boolean(mods[MOD_ALIAS[name] || name])

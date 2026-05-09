@@ -23,7 +23,7 @@
  */
 
 import { ctx, err, inc, PTR } from './ctx.js'
-import { T, VAL, valTypeOf, lookupValType, extractParams, classifyParam, findFreeVars, STMT_OPS, repOf, updateRep, repOfGlobal, staticPropertyKey } from './analyze.js'
+import { T, VAL, valTypeOf, lookupValType, extractParams, classifyParam, findFreeVars, STMT_OPS, repOf, updateRep, repOfGlobal, staticPropertyKey, lazyOf } from './analyze.js'
 import {
   typed, asF64, asI32, asI64, asPtrOffset, asParamType, toI32, fromI64,
   NULL_IR, nullExpr, undefExpr, MAX_CLOSURE_ARITY,
@@ -573,6 +573,7 @@ export function emitDecl(...inits) {
     const isObjLit = Array.isArray(init) && init[0] === '{}'
     if (isObjLit) ctx.schema.targetStack.push({ name, active: true })
     const val = emit(init)
+    if (val?.lazy) updateRep(name, { lazy: val.lazy })
     if (isObjLit) ctx.schema.targetStack.pop()
     // Direct-call dispatch for const-bound, non-escaping local closures: skip call_indirect.
     // Gate: not boxed (no mutable cross-fn capture), not global, not reassigned in this body.
@@ -1671,11 +1672,13 @@ export const emitter = {
   '??': (a, b) => {
     const va = emit(a)
     const t = temp()
-    return typed(['if', ['result', 'f64'],
+    const out = typed(['if', ['result', 'f64'],
       // Check: is a NOT nullish?
       ['i32.eqz', isNullish(['local.tee', `$${t}`, asF64(va)])],
       ['then', ['local.get', `$${t}`]],
       ['else', asF64(emit(b))]], 'f64')
+    if (va?.lazy) out.lazy = va.lazy
+    return out
   },
 
   'void': a => {
@@ -1885,6 +1888,8 @@ export const emitter = {
       const [, obj, method] = callee
       const t = `${T}om${ctx.func.uniq++}`
       ctx.func.locals.set(t, 'f64')
+      const lazy = lazyOf(obj)
+      if (lazy) updateRep(t, { lazy })
       const va = asF64(emit(obj))
       const methodCall = emitter['()'](['.', t, method], callArgs)
       return typed(['block', ['result', 'f64'],
@@ -1898,6 +1903,9 @@ export const emitter = {
     // Method call: obj.method(args) → type-aware dispatch
     if (Array.isArray(callee) && callee[0] === '.') {
       const [, obj, method] = callee
+      const lazy = lazyOf(obj)
+      const lazyMethod = lazy?.hook?.emitMethod?.(lazy, obj, method, parsed.normal, parsed)
+      if (lazyMethod) return lazyMethod
 
       // Function property call: fn.prop(args) → direct call to fn$prop
       if (typeof obj === 'string' && ctx.func.names.has(obj)) {
@@ -2310,6 +2318,7 @@ export const emitter = {
           arrayIR], func.sig.results[0])
         if (func.sig.ptrKind != null) callIR.ptrKind = func.sig.ptrKind
         if (func.sig.ptrAux != null) callIR.ptrAux = func.sig.ptrAux
+        if (func.lazyResult) callIR.lazy = func.lazyResult
         return callIR
       }
 
@@ -2330,6 +2339,7 @@ export const emitter = {
       const callIR = typed(['call', `$${callee}`, ...args], func?.sig.results[0] || 'f64')
       if (func?.sig.ptrKind != null) callIR.ptrKind = func.sig.ptrKind
       if (func?.sig.ptrAux != null) callIR.ptrAux = func.sig.ptrAux
+      if (func?.lazyResult) callIR.lazy = func.lazyResult
       return callIR
     }
 

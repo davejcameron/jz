@@ -11,7 +11,7 @@
 
 import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, temp, usesDynProps, ptrOffsetIR, isNullish } from '../src/ir.js'
 import { emit } from '../src/emit.js'
-import { valTypeOf, lookupValType, VAL, T, repOf, updateRep, shapeOf } from '../src/analyze.js'
+import { valTypeOf, lookupValType, VAL, T, repOf, updateRep, shapeOf, lazyOf } from '../src/analyze.js'
 import { err, inc, PTR, LAYOUT } from '../src/ctx.js'
 import { initSchema } from './schema.js'
 import { strHashLiteral } from './collection.js'
@@ -353,6 +353,12 @@ export default (ctx) => {
     ['then', access],
     ['else', ['f64.const', `nan:${UNDEF_NAN}`]]], 'f64')
 
+  const lazyHook = lazy => lazy?.hook || null
+  const emitLazyOptionalGuarded = (hook, lazy, guard, access) => typed(['if', ['result', 'f64'],
+    ['i32.eqz', hook.isNullish(lazy, guard)],
+    ['then', access],
+    ['else', ['f64.const', `nan:${UNDEF_NAN}`]]], 'f64')
+
   // === Shared dispatch helpers ===
 
   /** Emit .length access for a WASM f64 node. Monomorphize by vt, or runtime dispatch.
@@ -555,6 +561,12 @@ export default (ctx) => {
   // === Property dispatch (.length, .prop) ===
 
   ctx.core.emit['.'] = (obj, prop) => {
+    const lazy = lazyOf(obj)
+    const hook = lazyHook(lazy)
+    if (hook) {
+      const r = prop === 'length' ? hook.emitLength?.(lazy, obj) : hook.emitProp?.(lazy, obj, prop)
+      if (r) return r
+    }
     // Boxed object: delegate .length and .prop to inner value or schema
     if (typeof obj === 'string' && ctx.schema.isBoxed(obj)) {
       if (prop === 'length') {
@@ -608,8 +620,15 @@ export default (ctx) => {
     const t = temp()
     const va = asF64(emit(obj))
     const vt = typeof obj === 'string' ? repOf(obj)?.val : valTypeOf(obj)
+    const lazy = lazyOf(obj)
+    const hook = lazyHook(lazy)
+    if (hook) updateRep(t, { lazy })
     let access
-    if (prop === 'length') {
+    if (hook && prop === 'length') {
+      access = hook.emitLength?.(lazy, t)
+    } else if (hook) {
+      access = hook.emitProp?.(lazy, t, prop)
+    } else if (prop === 'length') {
       access = emitLengthAccess(['local.get', `$${t}`], vt)
     } else {
       const propIdx = typeof obj === 'string' ? ctx.schema.find(obj, prop) : -1
@@ -641,6 +660,7 @@ export default (ctx) => {
         }
       }
     }
+    if (hook && access) return emitLazyOptionalGuarded(hook, lazy, typed(['local.tee', `$${t}`, va], 'f64'), access)
     return emitNullishGuarded(['local.tee', `$${t}`, va], access)
   }
 

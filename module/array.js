@@ -10,7 +10,7 @@
 
 import { typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, temp, tempI32, allocPtr, multiCount, arrayLoop, elemLoad, elemStore, truthyIR, extractF64Bits, appendStaticSlots, mkPtrIR, slotAddr, isLiteralStr, resolveValType, undefExpr } from '../src/ir.js'
 import { emit, materializeMulti } from '../src/emit.js'
-import { valTypeOf, lookupValType, VAL, extractParams, updateRep, staticPropertyKey } from '../src/analyze.js'
+import { valTypeOf, lookupValType, VAL, extractParams, updateRep, staticPropertyKey, lazyOf } from '../src/analyze.js'
 import { ctx, inc, err, PTR, LAYOUT } from '../src/ctx.js'
 import { strHashLiteral } from './collection.js'
 
@@ -544,11 +544,19 @@ export default (ctx) => {
     // otherwise re-execute the source expression per use at runtime.
     if (typeof arr !== 'string' && !(Array.isArray(arr) && arr[0] === 'local.get')) {
       const vtArr = valTypeOf(arr)
+      const lazy = lazyOf(arr)
       const h = temp('ai')
       if (vtArr) updateRep(h, { val: vtArr })
+      if (lazy) updateRep(h, { lazy })
       const setup = ['local.set', `$${h}`, asF64(emit(arr))]
       const result = ctx.core.emit['[]'](h, idx)
       return typed(['block', ['result', 'f64'], setup, asF64(result)], 'f64')
+    }
+    const lazy = lazyOf(arr)
+    if (lazy) {
+      const hook = lazy.hook
+      const r = hook?.emitIndex?.(lazy, arr, idx)
+      if (r) return r
     }
     const keyType = typeof idx === 'string' ? lookupValType(idx) : valTypeOf(idx)
     const useRuntimeKeyDispatch = keyType == null || (typeof idx === 'string' && keyType !== VAL.STRING)

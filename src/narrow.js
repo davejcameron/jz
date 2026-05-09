@@ -17,7 +17,7 @@ import {
   inferArgArrElemValType, inferArgSchema, inferArgType, inferArgTypedCtor,
   invalidateLocalsCache, invalidateValTypesCache, isBlockBody, alwaysReturns,
   narrowReturnArrayElems, observeProgramSlots, returnExprs, staticObjectProps,
-  typedElemAux, typedElemCtor, ctorFromElemAux, valTypeOf,
+  typedElemAux, typedElemCtor, ctorFromElemAux, valTypeOf, lazyOf,
 } from './analyze.js'
 
 const PTR_ABI_KINDS = new Set([VAL.OBJECT, VAL.SET, VAL.MAP, VAL.BUFFER])
@@ -353,6 +353,9 @@ export default function narrowSignatures(programFacts, ast) {
       },
     },
     mergeRule('schemaId', (arg, _k, state) => inferArgSchema(arg, state.callerParamFacts('schemaId'))),
+    mergeRule('lazy', (arg, _k, state) =>
+      typeof arg === 'string' ? state.callerParamFacts('lazy')?.get(arg) || null : lazyOf(arg)
+    ),
     {
       missing: poison('intConst'),
       apply(r, arg, k, state) {
