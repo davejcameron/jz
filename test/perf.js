@@ -595,6 +595,18 @@ test('compile profileNames emits wasm function name section', () => {
   ok(names.includes('helper'), 'internal function name should be present')
 })
 
+test('compile profileGuestFunctions keeps guest helper frames nameable', () => {
+  const src = 'let helper = (x) => x + 1; let other = (x) => helper(x) * 2; export let run = (n) => other(n)'
+
+  const releaseNames = functionNames(compile(src, { profileNames: true })).map(([, name]) => name)
+  ok(!releaseNames.includes('helper'), 'release profiling names reflect optimized-away helper')
+
+  const profileNames = functionNames(compile(src, { profileGuestFunctions: true })).map(([, name]) => name)
+  ok(profileNames.includes('helper'), 'profileGuestFunctions should keep helper as a named wasm function')
+  ok(profileNames.includes('other'), 'profileGuestFunctions should keep caller as a named wasm function')
+  ok(profileNames.includes('run'), 'profileGuestFunctions should still name the export')
+})
+
 // === JSON shape inference (shapeStrs) ===
 //
 // Bench convention writes `let SRC = '{...}'` to defeat compile-time JSON.parse

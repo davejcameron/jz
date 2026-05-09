@@ -176,6 +176,9 @@ jz.memory = enhanceMemory
  * @param {boolean} [opts.profileNames] - Emit a standard wasm `name` custom
  *   section for profiler/debugger symbolication. Off by default to keep release
  *   artifacts small.
+ * @param {boolean} [opts.profileGuestFunctions] - Preserve JS function
+ *   boundaries for profiler builds and emit `profileNames`. Disables source and
+ *   WAT-level inlining, so optimized release code remains unchanged by default.
  * @param {string} [opts.importMetaUrl] - Module URL used to lower `import.meta.url`
  *   and static `import.meta.resolve("...")` expressions.
  * @returns {Uint8Array|string}
@@ -207,6 +210,10 @@ jz.compile = (code, opts = {}) => {
   if (opts.importMetaUrl) ctx.transform.importMetaUrl = String(opts.importMetaUrl)
   if (opts.nativeTimers) ctx.features.blockingTimers = true  // wasmtime CLI: include __timer_loop in _start
   ctx.transform.optimize = resolveOptimize(opts.optimize)
+  if (opts.profileGuestFunctions) {
+    ctx.transform.optimize.sourceInline = false
+    ctx.transform.optimize.watr = false
+  }
 
   if (opts._interp) {
     for (const [name, fn] of Object.entries(opts._interp)) {
@@ -251,7 +258,7 @@ jz.compile = (code, opts = {}) => {
   }
   if (opts.wat) return time('watrPrint', () => watrPrint(optimized))
   const wasm = time('watrCompile', () => watrCompile(optimized))
-  return opts.profileNames ? appendFunctionNames(wasm, optimized) : wasm
+  return (opts.profileNames || opts.profileGuestFunctions) ? appendFunctionNames(wasm, optimized) : wasm
 }
 
 /**
