@@ -31,6 +31,7 @@ Examples:
   jz --strict program.js           # strict mode
   jz --jzify lib.js                # → lib.jz
   jz -e "1 + 2"
+  jz --inject shopify_functions=./polyfill.js fn.js
 
 Options:
   --output, -o <file>       Output file (.wat, .wasm, or - for stdout)
@@ -39,6 +40,7 @@ Options:
   --eval, -e                Evaluate expression or file
   --wat                     Output WAT text instead of binary
   --resolve                 Resolve bare specifiers via Node.js module resolution
+  --inject <spec>=<path>    Inject a module source for a bare specifier (repeatable)
   `)
 }
 
@@ -100,12 +102,21 @@ async function handleJzify(args) {
 
 async function handleCompile(args) {
   let inputFile = null, outputFile = null, wat = false, strict = false, resolveNode = false
+  const injected = {}
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--output' || args[i] === '-o') outputFile = args[++i]
     else if (args[i] === '--wat') wat = true
     else if (args[i] === '--strict') strict = true
     else if (args[i] === '--resolve') resolveNode = true
+    else if (args[i] === '--inject') {
+      const val = args[++i]
+      const eq = val.indexOf('=')
+      if (eq === -1) throw new Error(`--inject requires <specifier>=<path> (got: ${val})`)
+      const specifier = val.slice(0, eq)
+      const filePath = resolve(val.slice(eq + 1))
+      injected[specifier] = readFileSync(filePath, 'utf8')
+    }
     else if (!inputFile) inputFile = args[i]
   }
 
@@ -119,11 +130,15 @@ async function handleCompile(args) {
   const dir = dirname(resolve(inputFile))
   const modules = {}
 
+  // --inject flags take priority; applied before any other resolution
+  Object.assign(modules, injected)
+
   const pkgFile = join(dir, 'package.json')
   if (existsSync(pkgFile)) {
     try {
       const pkg = JSON.parse(readFileSync(pkgFile, 'utf8'))
       if (pkg.imports) for (const [spec, path] of Object.entries(pkg.imports)) {
+        if (modules[spec]) continue  // injected module wins
         const full = resolve(dir, path)
         try { modules[spec] = readFileSync(full, 'utf8') } catch {}
       }
