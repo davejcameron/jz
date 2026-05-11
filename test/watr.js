@@ -1,11 +1,10 @@
 import test from 'tst'
 import { ok, is } from 'tst/assert.js'
 import jz from '../index.js'
-import nativeCompile from '/Users/div/projects/watr/src/compile.js'
+import nativeCompile from 'watr/compile'
 import { readFileSync, readdirSync } from 'fs'
 
-// Use local sibling watr source (not npm — local and npm differ)
-const WATR_ROOT = '/Users/div/projects/watr'
+const WATR_ROOT = new URL('.', import.meta.resolve('watr')).pathname.replace(/\/$/, '')
 const watrSrc = file => readFileSync(`${WATR_ROOT}/src/${file}`, 'utf8')
 const watrExample = file => readFileSync(new URL(`./watr-examples/${file}`, import.meta.url), 'utf8')
 
